@@ -10,8 +10,13 @@
   "qa_run_id": 38022161131,
   "qa_artifact_id": 11658343952,
   "qa_artifact_sha256": "0f5984b487b556e432434660b6b9b0151323b72f19bcdf2da51d8a7bcfbd2fa0",
-  "gumroad_zip_filename": "125A_Drum_Finisher_V1_v1.0.0_Windows_x64_Gumroad_FINAL_FULL.zip",
-  "gumroad_zip_sha256": "37f652230b484ff676c37ab2604333df701c0b2a13b65a840e725b165357869b",
+  "gumroad_zip_filename": "125A_Drum_Finisher_V1_v1.0.0_Windows_x64_Gumroad_FINAL_FULL_STANDARD.zip",
+  "gumroad_zip_sha256": "e3c6f3e2151a1a4a30cce444425be618e1f6a42f16e66ebd0e3a913eb7b956ac",
   "gumroad_zip_verified": true,
-  "real_host_ui_signoff": "not fully documented"
+  "real_host_ui_signoff": "not fully documented",
+  "document_languages": [
+    "DE",
+    "EN"
+  ],
+  "document_pdfs": 4
 }
