@@ -1,0 +1,166 @@
+name: Drum Finisher Demo Release QA
+
+on:
+  push:
+    branches:
+      - demo/v1.0.0-engineering
+    paths:
+      - ".github/workflows/demo-release-qa.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: drum-finisher-v1-demo
+  cancel-in-progress: true
+
+jobs:
+  demo-release-qa:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Final repository
+        uses: actions/checkout@v4
+
+      - name: Checkout exact verified Drum Finisher source
+        uses: actions/checkout@v4
+        with:
+          repository: challanger2000/125A-Drum-Finisher
+          ref: 8ab575977aa6dfdd04614c957db5f4fd7bd8e6ed
+          path: _source
+
+      - name: Verify source provenance
+        shell: pwsh
+        run: |
+          $actual = (git -C _source rev-parse HEAD).Trim()
+          if ($actual -ne "8ab575977aa6dfdd04614c957db5f4fd7bd8e6ed") { throw "Unexpected source commit $actual" }
+
+      - name: Apply Final-repo Demo overlay
+        shell: pwsh
+        run: |
+          Copy-Item demo/source-overlay/CMakeLists.txt _source/CMakeLists.txt -Force
+          Copy-Item demo/source-overlay/src/DemoGate.h _source/src/DemoGate.h -Force
+          Copy-Item demo/source-overlay/src/LicenseStatus.h _source/src/LicenseStatus.h -Force
+          Copy-Item demo/source-overlay/src/vst/DrumPlugin.cpp _source/src/vst/DrumPlugin.cpp -Force
+          Copy-Item demo/source-overlay/src/gui/FaceplateView.h _source/src/gui/FaceplateView.h -Force
+          Copy-Item demo/source-overlay/src/gui/FaceplateView.cpp _source/src/gui/FaceplateView.cpp -Force
+          Copy-Item demo/source-overlay/tests/DemoGateQA.cpp _source/tests/DemoGateQA.cpp -Force
+
+      - name: Verify GUI control contract
+        working-directory: _source
+        run: python tests/gui_control_contract_qa.py
+
+      - name: Configure Drum Finisher Demo
+        shell: pwsh
+        working-directory: _source
+        run: |
+          git clone --filter=blob:none --depth=1 --branch v3.8.1_build_84 --recurse-submodules --shallow-submodules https://github.com/steinbergmedia/vst3sdk.git "$env:RUNNER_TEMP/vst3sdk"
+          $actual = (git -C "$env:RUNNER_TEMP/vst3sdk" rev-parse HEAD).Trim()
+          if ($actual -ne "3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96") { throw "Unexpected SDK revision $actual" }
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DDRUM_BUILD_VST3=ON -DVST3_SDK_ROOT="${env:RUNNER_TEMP}/vst3sdk"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build plugin and complete internal QA
+        working-directory: _source
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Run complete internal QA
+        working-directory: _source
+        run: ctest --test-dir build -C Release --output-on-failure -V
+
+      - name: Locate exact Drum Finisher Demo VST3
+        id: drum
+        shell: pwsh
+        working-directory: _source
+        run: |
+          $plugin = Get-ChildItem -Path build -Recurse -Directory -Filter "125A_Drum_Finisher.vst3" | Select-Object -First 1
+          if (-not $plugin) { throw "125A_Drum_Finisher.vst3 bundle not found" }
+          "plugin=$($plugin.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Validate exact VST3 with Steinberg normal and local-instance modes
+        shell: pwsh
+        working-directory: _source
+        run: |
+          $validator = Get-ChildItem -Path build -Recurse -File -Filter "validator.exe" | Where-Object { $_.FullName -match "[\\/]Release[\\/]" } | Select-Object -First 1
+          if (-not $validator) { $validator = Get-ChildItem -Path build -Recurse -File -Filter "validator.exe" | Select-Object -First 1 }
+          $plugin = Get-ChildItem -Path build -Recurse -Directory -Filter "125A_Drum_Finisher.vst3" | Select-Object -First 1
+          if (-not $plugin -or -not $validator) { throw "Validator or exact VST3 missing" }
+          & $validator.FullName $plugin.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Steinberg standard Validator FAILED: $LASTEXITCODE" }
+          & $validator.FullName -l $plugin.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Steinberg local-instance Validator FAILED: $LASTEXITCODE" }
+
+      - name: Checkout 125A Plugin Tester v0.2.9
+        uses: actions/checkout@v4
+        with:
+          repository: challanger2000/125A-Plugin-Tester-Final
+          ref: fd246146994384e301c735e7d860b53aa06b18c5
+          path: _source/_plugin-tester
+
+      - name: Configure 125A Plugin Tester
+        shell: pwsh
+        working-directory: _source
+        run: |
+          $prefix = Join-Path (Get-Location) "_plugin-tester-installed"
+          cmake -S _plugin-tester -B _plugin-tester/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_INSTALL_PREFIX="$prefix" -DSMTG_CREATE_PLUGIN_LINK=0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build and install 125A Plugin Tester
+        working-directory: _source
+        run: cmake --build _plugin-tester/build --config Release --target install --parallel
+
+      - name: Run 125A Plugin Tester v0.2.9
+        shell: pwsh
+        working-directory: _source
+        env:
+          DRUM_PLUGIN: ${{ steps.drum.outputs.plugin }}
+        run: |
+          $tester = Get-ChildItem "_plugin-tester-installed" -Recurse -File -Filter "125A_Plugin_Tester.exe" | Select-Object -First 1
+          if (-not $tester) { throw "125A_Plugin_Tester.exe not found" }
+          $env:125A_PLUGIN_TESTER_REPORT_DIR = Join-Path (Get-Location) "plugin-tester-reports"
+          Remove-Item $env:125A_PLUGIN_TESTER_REPORT_DIR -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $env:125A_PLUGIN_TESTER_REPORT_DIR | Out-Null
+          $process = Start-Process -FilePath $tester.FullName -ArgumentList @($env:DRUM_PLUGIN) -Wait -PassThru
+          $report = Get-ChildItem $env:125A_PLUGIN_TESTER_REPORT_DIR -File -Filter "*_125A_QA_Report.txt" | Select-Object -First 1
+          $json = Get-ChildItem $env:125A_PLUGIN_TESTER_REPORT_DIR -File -Filter "*_125A_QA_Report.json" | Select-Object -First 1
+          $io = Get-ChildItem $env:125A_PLUGIN_TESTER_REPORT_DIR -File -Filter "*_125A_IO_Event_Probe.txt" | Select-Object -First 1
+          $editor = Get-ChildItem $env:125A_PLUGIN_TESTER_REPORT_DIR -File -Filter "*_125A_Editor_Lifecycle_Probe.txt" | Select-Object -First 1
+          $val = Get-ChildItem $env:125A_PLUGIN_TESTER_REPORT_DIR -File -Filter "*_125A_Steinberg_Validator.txt" | Select-Object -First 1
+          foreach ($required in @($report,$json,$io,$editor,$val)) { if (-not $required) { throw "Required 125A QA report missing" } }
+          $reportText = Get-Content $report.FullName -Raw
+          $data = Get-Content $json.FullName -Raw | ConvertFrom-Json
+          if ($process.ExitCode -ne 0 -or $data.status -ne "PASS") { throw "125A Plugin Tester failed" }
+          if (-not $reportText.Contains("0 WARNING / 0 FAIL") -or -not $reportText.Contains("RELEASE: PASS")) { throw "125A QA report not clean" }
+          if (-not (Get-Content $io.FullName -Raw).Contains("Result: PASS")) { throw "I/O Event Probe failed" }
+          if (-not (Get-Content $editor.FullName -Raw).Contains("Result: PASS")) { throw "Editor Lifecycle Probe failed" }
+
+      - name: Verify Demo bundle has no Full license
+        shell: pwsh
+        working-directory: _source
+        env:
+          DRUM_PLUGIN: ${{ steps.drum.outputs.plugin }}
+        run: |
+          $license = Join-Path $env:DRUM_PLUGIN "Contents\Resources\125A_Drum_Finisher_V1.license"
+          if (Test-Path $license) { throw "Demo bundle unexpectedly contains Full license" }
+
+      - name: Stage exact tested Demo VST3
+        shell: pwsh
+        working-directory: _source
+        env:
+          DRUM_PLUGIN: ${{ steps.drum.outputs.plugin }}
+        run: |
+          Remove-Item release-artifact -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force release-artifact | Out-Null
+          Copy-Item -Path $env:DRUM_PLUGIN -Destination release-artifact -Recurse -Force
+
+      - name: Upload exact tested Demo VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: 125A-Drum-Finisher-V1-Demo-Release-QA
+          path: _source/release-artifact
+
+      - name: Upload complete Demo QA reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 125A-Drum-Finisher-V1-Demo-QA-Reports
+          path: _source/plugin-tester-reports/*
+          if-no-files-found: warn
